@@ -1,0 +1,81 @@
+#! /bin/sh
+
+# Author: lbk.
+# Date  : 20190919
+
+bridges=`ovs-vsctl -- --real list-br`
+if [ -n "${bridges}" ]; 
+then
+    echo 
+else
+    exit 1
+fi
+
+mkdir -p /var/run/openvswitch/ovs-save
+if [ -d '/var/run/openvswitch/ovs-save' ];
+then
+    workdir='/var/run/openvswitch/ovs-save'
+else
+    exit 1
+fi 
+
+get_highest_ofp_version() {
+    ovs-vsctl get bridge "$1" protocols | \
+        awk -F '"' '{ print (NF>1)? $(NF-1) : "OpenFlow14" }'
+}
+
+save_interfaces () {
+    if (ovs-ofctl --version) > /dev/null 2>&1;
+    then 
+        :;
+    else
+        echo "$0: ovs-ofctl not found in $PATH" >&2
+        exit 1
+    fi
+
+    for bridge in "$@";
+#ovs-ofctl -Oopenflow13 show br-int | grep addr | sed -e s'/): addr.*/ /'g -e s'/(/:/'g
+    do
+        ofp_version=$(get_highest_ofp_version "$bridge")
+        ovs-ofctl -O $ofp_version show "$bridge"| \
+            grep addr | \
+            sed -e 's/): addr.*//g' \
+                -e 's/(/:/g' | \
+		sort > \
+                "$workdir/$bridge.interfaces.dump"
+    done
+}
+
+save_flows () {
+    if (ovs-ofctl --version) > /dev/null 2>&1;
+    then
+        :;
+    else
+        echo "$0: ovs-ofctl not found in $PATH" >&2
+        exit 1
+    fi
+
+    for bridge in "$@";
+    do
+        # Get the highest enabled OpenFlow version
+        ofp_version=$(get_highest_ofp_version "$bridge")
+
+        # If possible use OpenFlow 1.4 atomic bundle txn for flows and groups
+        [ ${ofp_version#OpenFlow} -ge 14 ] && bundle=" --bundle" || bundle=""
+
+        ovs-ofctl -O $ofp_version dump-groups "$bridge" | \
+            sed -e '/^OFPST_GROUP_DESC/d' \
+                -e '/^NXST_GROUP_DESC/d' > \
+                "$workdir/$bridge.groups.dump"
+
+        ovs-ofctl -O $ofp_version dump-flows --no-names --no-stats "$bridge" | \
+            sed -e '/NXST_FLOW/d' \
+                -e '/OFPST_FLOW/d' \
+                -e 's/\(idle\|hard\)_age=[^,]*,//g' > \
+                "$workdir/$bridge.flows.dump"
+    done
+}
+
+save_interfaces $bridges
+save_flows $bridges
+exit 0

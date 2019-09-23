@@ -1,0 +1,54 @@
+#! /bin/sh
+
+#
+# File_Name: ovs-restore-flows
+# Author: lbk.
+# Date  : 20190919
+#
+
+bridges=`ovs-vsctl -- --real list-br`
+if [ -n "${bridges}" ]; 
+then
+    echo 
+else
+    exit 1
+fi
+
+if [ -d '/var/run/openvswitch/ovs-save' ];
+then
+    workdir='/var/run/openvswitch/ovs-save'
+else
+    exit 1
+fi 
+
+get_highest_ofp_version() 
+{
+    ovs-vsctl get bridge "$1" protocols | \
+        awk -F '"' '{ print (NF>1)? $(NF-1) : "OpenFlow14" }'
+}
+
+restore_flows() {
+    if (ovs-ofctl --version) > /dev/null 2>&1;
+    then
+        :;
+    else
+        echo "$0: ovs-ofctl not found in $PATH" >&2
+        exit 1
+    fi
+
+    for bridge in "$@";
+    do
+        # Get the highest enabled OpenFlow version
+        ofp_version=$(get_highest_ofp_version "$bridge")
+
+        # If possible use OpenFlow 1.4 atomic bundle txn for flows and groups
+        [ ${ofp_version#OpenFlow} -ge 14 ] && bundle=" --bundle" || bundle=""
+
+        ovs-ofctl -O $ofp_version add-groups "$bridge" -< "$workdir/$bridge.groups.dump"
+
+        ovs-ofctl -O $ofp_version add-flows "$bridge" -< "$workdir/$bridge.flows.dump"
+    done
+}
+
+restore_flows $bridges
+exit 0
